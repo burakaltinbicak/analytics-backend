@@ -1,0 +1,37 @@
+{
+  "name": "analytics-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsup src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^9.1.0",
+    "@neondatabase/serverless": "^1.0.2",
+    "dotenv": "^17.4.1",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.8.4",
+    "fastify-plugin": "^5.1.0",
+    "geoip-lite": "^2.0.1",
+    "ua-parser-js": "^2.0.9",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/geoip-lite": "^1.4.4",
+    "@types/node": "^25.5.2",
+    "@types/ua-parser-js": "^0.7.39",
+    "drizzle-kit": "^0.31.10",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.2"
+  }
+}
