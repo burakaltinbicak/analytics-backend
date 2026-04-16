@@ -1,10 +1,12 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db/index'
-import { sessions, events, websites } from '../db/schema'
+import { sessions, events } from '../db/schema'
 import { z } from 'zod'
-import { eq } from 'drizzle-orm'
 import geoip from 'geoip-lite'
 import { UAParser } from 'ua-parser-js'
+import { websiteCache, sessionCache } from '../db/cache'
+import { addToBuffer } from '../db/writeBuffer'
+
 const toplaSchema = z.object({
     website_id: z.string().uuid(),
     session_id: z.string(),
@@ -27,31 +29,36 @@ export const toplaRoutes = async (app: FastifyInstance) => {
             return reply.code(400).send({ error: 'Geçersiz veri' })
         }
 
-        const website = await db.select().from(websites).where(eq(websites.id, body.website_id))
-        if (website.length === 0) {
+        if (!websiteCache.has(body.website_id)) {
             return reply.code(404).send({ error: 'Site bulunamadı' })
         }
 
         const ip = request.ip
         const geo = geoip.lookup(ip)
         const country = geo?.country ?? null
+        //const country = 'TR'
 
         const parser = new UAParser(body.user_agent)
         const browser = parser.getBrowser().name ?? null
         const os = parser.getOS().name ?? null
         const device = parser.getDevice().type ?? 'desktop'
+        //  const browser = 'Chrome'
+        // const os = 'Windows'
+        // const device = 'desktop'
 
-        const existingSession = await db.select().from(sessions).where(eq(sessions.id, body.session_id))
 
-        if (existingSession.length > 0) {
-            await db.insert(events).values({
+        if (sessionCache.has(body.session_id)) {
+
+            addToBuffer({
                 website_id: body.website_id,
                 session_id: body.session_id,
                 eventname: body.event_name,
                 url_path: body.url_path,
                 event_data: body.event_data ?? null
             })
+
             return reply.code(200).send({ status: 'ok' })
+
         }
 
         const session = await db.insert(sessions).values({
@@ -65,8 +72,9 @@ export const toplaRoutes = async (app: FastifyInstance) => {
             os: os,
             device: device,
         }).returning()
+        sessionCache.add(session[0].id)
 
-        await db.insert(events).values({
+        addToBuffer({
             website_id: body.website_id,
             session_id: session[0].id,
             eventname: body.event_name,

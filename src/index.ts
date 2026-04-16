@@ -10,6 +10,11 @@ import { corsMiddleware } from './middlewares/_cors'
 import { rateLimitMiddleware } from './middlewares/rateLimit'
 import { statsRoutes } from './routes/stats'
 import { errorHandler } from './middlewares/errorHandler'
+import { websiteCache, sessionCache } from './db/cache'
+import { websites, sessions } from './db/schema'
+import { startBuffer, flush } from './db/writeBuffer'
+
+
 
 dotenv.config()
 
@@ -39,6 +44,28 @@ const start = async () => {
         await app.register(websiteRoutes)
         await app.register(toplaRoutes)
         await app.register(statsRoutes)
+
+        const allWebsites = await db.select({ id: websites.id }).from(websites)
+        allWebsites.forEach(w => websiteCache.add(w.id))
+        console.log(`Cache yüklendi: ${websiteCache.size} site`)
+
+        const allSessions = await db.select({ id: sessions.id }).from(sessions)
+        allSessions.forEach(s => sessionCache.add(s.id))
+        console.log(`Cache yüklendi: ${sessionCache.size} session`)
+
+        startBuffer()
+
+        const shutdown = async (signal: string) => {
+            console.log(`${signal} alindi, buffer flush ediliyor...`)
+            await flush()
+            await app.close()
+            process.exit(0)
+        }
+
+        process.on('SIGTERM', () => shutdown('SIGTERM'))
+        process.on('SIGINT', () => shutdown('SIGINT'))
+
+
         await app.listen({ port: Number(process.env.PORT) || 5000 })
         console.log('Server 5000 portunda calisiyor')
     } catch (err) {

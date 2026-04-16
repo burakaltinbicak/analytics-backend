@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify'
 import { db } from '../db/index'
 import { websites } from '../db/schema'
 import { z } from 'zod'
+import { websiteCache } from '../db/cache'
 
 const createWebsiteSchema = z.object({
     name: z.string().min(1),
@@ -20,6 +21,7 @@ export const websiteRoutes = async (app: FastifyInstance) => {
             }).returning()
 
             const website = result[0]
+            websiteCache.add(website.id)
 
             return {
                 id: website.id,
