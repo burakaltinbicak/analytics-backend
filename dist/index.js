@@ -156,13 +156,6 @@ var toplaRoutes = async (app2) => {
     if (!websiteCache.has(body.website_id)) {
       return reply.code(404).send({ error: "Site bulunamad\u0131" });
     }
-    const ip = request.ip;
-    const geo = import_geoip_lite.default.lookup(ip);
-    const country = geo?.country ?? null;
-    const parser = new import_ua_parser_js.UAParser(body.user_agent);
-    const browser = parser.getBrowser().name ?? null;
-    const os = parser.getOS().name ?? null;
-    const device = parser.getDevice().type ?? "desktop";
     if (sessionCache.has(body.session_id)) {
       addToBuffer({
         website_id: body.website_id,
@@ -173,6 +166,12 @@ var toplaRoutes = async (app2) => {
       });
       return reply.code(200).send({ status: "ok" });
     }
+    const geo = import_geoip_lite.default.lookup(request.ip);
+    const country = geo?.country ?? null;
+    const parser = new import_ua_parser_js.UAParser(body.user_agent);
+    const browser = parser.getBrowser().name ?? null;
+    const os = parser.getOS().name ?? null;
+    const device = parser.getDevice().type ?? "desktop";
     const session = await db.insert(sessions).values({
       id: body.session_id,
       website_id: body.website_id,
@@ -215,7 +214,7 @@ var import_rate_limit = __toESM(require("@fastify/rate-limit"));
 var import_fastify_plugin2 = __toESM(require("fastify-plugin"));
 var rateLimitMiddleware = (0, import_fastify_plugin2.default)(async (app2) => {
   await app2.register(import_rate_limit.default, {
-    max: 1e11,
+    max: 1e10,
     timeWindow: "1 minute"
   });
 });

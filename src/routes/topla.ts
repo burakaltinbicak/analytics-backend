@@ -17,7 +17,6 @@ const toplaSchema = z.object({
     screen: z.string().optional(),
     user_agent: z.string().optional(),
     event_data: z.record(z.string(), z.any()).optional()
-
 })
 
 export const toplaRoutes = async (app: FastifyInstance) => {
@@ -33,22 +32,8 @@ export const toplaRoutes = async (app: FastifyInstance) => {
             return reply.code(404).send({ error: 'Site bulunamadı' })
         }
 
-        const ip = request.ip
-        const geo = geoip.lookup(ip)
-        const country = geo?.country ?? null
-        //const country = 'TR'
-
-        const parser = new UAParser(body.user_agent)
-        const browser = parser.getBrowser().name ?? null
-        const os = parser.getOS().name ?? null
-        const device = parser.getDevice().type ?? 'desktop'
-        //  const browser = 'Chrome'
-        // const os = 'Windows'
-        // const device = 'desktop'
-
-
+        // Mevcut session — GeoIP ve UA Parser çalışmıyor
         if (sessionCache.has(body.session_id)) {
-
             addToBuffer({
                 website_id: body.website_id,
                 session_id: body.session_id,
@@ -56,10 +41,17 @@ export const toplaRoutes = async (app: FastifyInstance) => {
                 url_path: body.url_path,
                 event_data: body.event_data ?? null
             })
-
             return reply.code(200).send({ status: 'ok' })
-
         }
+
+        // Yeni session — sadece burada çalışıyor
+        const geo = geoip.lookup(request.ip)
+        const country = geo?.country ?? null
+
+        const parser = new UAParser(body.user_agent)
+        const browser = parser.getBrowser().name ?? null
+        const os = parser.getOS().name ?? null
+        const device = parser.getDevice().type ?? 'desktop'
 
         const session = await db.insert(sessions).values({
             id: body.session_id,
@@ -67,11 +59,12 @@ export const toplaRoutes = async (app: FastifyInstance) => {
             referrer: body.referrer ?? null,
             language: body.language ?? null,
             screen: body.screen ?? null,
-            country: country,
-            browser: browser,
-            os: os,
-            device: device,
+            country,
+            browser,
+            os,
+            device,
         }).returning()
+
         sessionCache.add(session[0].id)
 
         addToBuffer({
