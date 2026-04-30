@@ -119,11 +119,11 @@ var websiteRoutes = async (app2) => {
     const sessionCounts = await db.select({
       website_id: sessions.website_id,
       count: (0, import_drizzle_orm.count)()
-    }).from(sessions).where(import_drizzle_orm.sql`${sessions.website_id} = ANY(${websiteIds}::uuid[])`).groupBy(sessions.website_id);
+    }).from(sessions).where((0, import_drizzle_orm.inArray)(sessions.website_id, websiteIds)).groupBy(sessions.website_id);
     const avgDurations = await db.select({
       website_id: events.website_id,
       avg: import_drizzle_orm.sql`avg((${events.event_data}->>'duration')::int)`
-    }).from(events).where(import_drizzle_orm.sql`${events.website_id} = ANY(${websiteIds}::uuid[])`).groupBy(events.website_id);
+    }).from(events).where((0, import_drizzle_orm.inArray)(events.website_id, websiteIds)).groupBy(events.website_id);
     const sessionMap = new Map(sessionCounts.map((s) => [s.website_id, s.count]));
     const durationMap = new Map(avgDurations.map((d) => [d.website_id, Math.round(d.avg ?? 0)]));
     return allWebsites.map((site) => ({
@@ -277,13 +277,12 @@ var import_drizzle_orm2 = require("drizzle-orm");
 var statsRoutes = async (app2) => {
   app2.get("/api/websites/:id/stats", async (request, reply) => {
     const { id } = request.params;
-    const [sessionCount] = await db.select({ count: (0, import_drizzle_orm2.count)() }).from(sessions).where((0, import_drizzle_orm2.eq)(sessions.website_id, id));
-    const [eventCount] = await db.select({ count: (0, import_drizzle_orm2.count)() }).from(events).where((0, import_drizzle_orm2.eq)(events.website_id, id));
+    const sessionsResult = await db.select().from(sessions).where((0, import_drizzle_orm2.eq)(sessions.website_id, id));
+    const eventsResult = await db.select().from(events).where((0, import_drizzle_orm2.eq)(events.website_id, id));
     const pageViews = await db.select({ url_path: events.url_path, count: (0, import_drizzle_orm2.count)() }).from(events).where((0, import_drizzle_orm2.eq)(events.website_id, id)).groupBy(events.url_path);
     const browsers = await db.select({ browser: sessions.browser, count: (0, import_drizzle_orm2.count)() }).from(sessions).where((0, import_drizzle_orm2.eq)(sessions.website_id, id)).groupBy(sessions.browser);
     const devices = await db.select({ device: sessions.device, count: (0, import_drizzle_orm2.count)() }).from(sessions).where((0, import_drizzle_orm2.eq)(sessions.website_id, id)).groupBy(sessions.device);
     const countries = await db.select({ country: sessions.country, count: (0, import_drizzle_orm2.count)() }).from(sessions).where((0, import_drizzle_orm2.eq)(sessions.website_id, id)).groupBy(sessions.country);
-    const eventTypes = await db.select({ eventname: events.eventname, count: (0, import_drizzle_orm2.count)() }).from(events).where((0, import_drizzle_orm2.eq)(events.website_id, id)).groupBy(events.eventname);
     const scrollDepths = await db.select({
       depth: import_drizzle_orm2.sql`(${events.event_data}->>'depth')::int`,
       count: (0, import_drizzle_orm2.count)()
@@ -292,13 +291,12 @@ var statsRoutes = async (app2) => {
       avg: import_drizzle_orm2.sql`avg((${events.event_data}->>'duration')::int)`
     }).from(events).where((0, import_drizzle_orm2.eq)(events.website_id, id));
     return {
-      sessionCount: sessionCount.count,
-      eventCount: eventCount.count,
+      sessions: sessionsResult,
+      events: eventsResult,
       pageViews,
       browsers,
       devices,
       countries,
-      eventTypes,
       scrollDepths,
       avgDuration: Math.round(avgDuration[0].avg ?? 0)
     };

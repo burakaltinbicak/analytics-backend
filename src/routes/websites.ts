@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify'
 import { db } from '../db/index'
 import { websites, sessions, events } from '../db/schema'
-import { eq, count, sql } from 'drizzle-orm'
+import { count, sql, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { websiteCache } from '../db/cache'
 import { config } from '../config'
@@ -45,7 +45,7 @@ export const websiteRoutes = async (app: FastifyInstance) => {
                 count: count()
             })
             .from(sessions)
-            .where(sql`${sessions.website_id} = ANY(${websiteIds}::uuid[])`)
+            .where(inArray(sessions.website_id, websiteIds))
             .groupBy(sessions.website_id)
 
         const avgDurations = await db
@@ -54,7 +54,7 @@ export const websiteRoutes = async (app: FastifyInstance) => {
                 avg: sql<number>`avg((${events.event_data}->>'duration')::int)`
             })
             .from(events)
-            .where(sql`${events.website_id} = ANY(${websiteIds}::uuid[])`)
+            .where(inArray(events.website_id, websiteIds))
             .groupBy(events.website_id)
 
         const sessionMap = new Map(sessionCounts.map(s => [s.website_id, s.count]))
