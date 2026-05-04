@@ -61,7 +61,7 @@ const start = async () => {
         process.on('SIGTERM', () => shutdown('SIGTERM'))
         process.on('SIGINT', () => shutdown('SIGINT'))
 
-        await app.listen({ port: config.PORT })
+        await app.listen({ port: config.PORT, host: '0.0.0.0' })
         console.log(`Server ${config.PORT} portunda calisiyor`)
     } catch (err) {
         console.error(err)

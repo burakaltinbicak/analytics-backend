@@ -3,6 +3,9 @@ import cors from '@fastify/cors'
 
 export const corsMiddleware = fp(async (app) => {
     await app.register(cors, {
-        origin: '*'
+        origin: (origin, cb) => {
+            cb(null, true)
+        },
+        credentials: true
     })
 })

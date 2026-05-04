@@ -194,42 +194,47 @@ var batchSchema = import_zod3.z.object({
   events: import_zod3.z.array(toplaSchema).min(1).max(50)
 });
 async function processEvent(body, ip) {
-  if (!websiteCache.has(body.website_id)) return;
-  if (sessionCache.has(body.session_id)) {
+  try {
+    if (!websiteCache.has(body.website_id)) return;
+    if (sessionCache.has(body.session_id)) {
+      addToBuffer({
+        website_id: body.website_id,
+        session_id: body.session_id,
+        eventname: body.event_name,
+        url_path: body.url_path,
+        event_data: body.event_data ?? null
+      });
+      return;
+    }
+    const geo = import_geoip_lite.default.lookup(ip);
+    const country = geo?.country ?? null;
+    const parser = new import_ua_parser_js.UAParser(body.user_agent);
+    const browser = parser.getBrowser().name ?? null;
+    const os = parser.getOS().name ?? null;
+    const device = parser.getDevice().type ?? "desktop";
+    const session = await db.insert(sessions).values({
+      id: body.session_id,
+      website_id: body.website_id,
+      referrer: body.referrer ?? null,
+      language: body.language ?? null,
+      screen: body.screen ?? null,
+      country,
+      browser,
+      os,
+      device
+    }).onConflictDoNothing().returning();
+    const sessionId = session[0]?.id ?? body.session_id;
+    sessionCache.add(sessionId);
     addToBuffer({
       website_id: body.website_id,
-      session_id: body.session_id,
+      session_id: sessionId,
       eventname: body.event_name,
       url_path: body.url_path,
       event_data: body.event_data ?? null
     });
-    return;
+  } catch (err) {
+    console.error("processEvent HATA:", err);
   }
-  const geo = import_geoip_lite.default.lookup(ip);
-  const country = geo?.country ?? null;
-  const parser = new import_ua_parser_js.UAParser(body.user_agent);
-  const browser = parser.getBrowser().name ?? null;
-  const os = parser.getOS().name ?? null;
-  const device = parser.getDevice().type ?? "desktop";
-  const session = await db.insert(sessions).values({
-    id: body.session_id,
-    website_id: body.website_id,
-    referrer: body.referrer ?? null,
-    language: body.language ?? null,
-    screen: body.screen ?? null,
-    country,
-    browser,
-    os,
-    device
-  }).returning();
-  sessionCache.add(session[0].id);
-  addToBuffer({
-    website_id: body.website_id,
-    session_id: session[0].id,
-    eventname: body.event_name,
-    url_path: body.url_path,
-    event_data: body.event_data ?? null
-  });
 }
 var toplaRoutes = async (app2) => {
   app2.post("/api/topla", async (request, reply) => {
@@ -239,11 +244,10 @@ var toplaRoutes = async (app2) => {
   });
   app2.post("/api/topla/batch", async (request, reply) => {
     const body = batchSchema.parse(request.body);
-    let processed = 0;
-    for (const event of body.events) {
-      await processEvent(event, request.ip);
-      processed++;
-    }
+    const results = await Promise.allSettled(
+      body.events.map((event) => processEvent(event, request.ip))
+    );
+    const processed = results.filter((r) => r.status === "fulfilled").length;
     return reply.code(200).send({ status: "ok", processed });
   });
   app2.get("/api/topla", async (request, reply) => {
@@ -258,7 +262,10 @@ var import_fastify_plugin = __toESM(require("fastify-plugin"));
 var import_cors = __toESM(require("@fastify/cors"));
 var corsMiddleware = (0, import_fastify_plugin.default)(async (app2) => {
   await app2.register(import_cors.default, {
-    origin: "*"
+    origin: (origin, cb) => {
+      cb(null, true);
+    },
+    credentials: true
   });
 });
 
@@ -410,7 +417,7 @@ var start = async () => {
     };
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
-    await app.listen({ port: config.PORT });
+    await app.listen({ port: config.PORT, host: "0.0.0.0" });
     console.log(`Server ${config.PORT} portunda calisiyor`);
   } catch (err) {
     console.error(err);

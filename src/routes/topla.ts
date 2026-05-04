@@ -24,48 +24,53 @@ const batchSchema = z.object({
 })
 
 async function processEvent(body: z.infer<typeof toplaSchema>, ip: string) {
-    if (!websiteCache.has(body.website_id)) return
+    try {
+        if (!websiteCache.has(body.website_id)) return
 
-    if (sessionCache.has(body.session_id)) {
+        if (sessionCache.has(body.session_id)) {
+            addToBuffer({
+                website_id: body.website_id,
+                session_id: body.session_id,
+                eventname: body.event_name,
+                url_path: body.url_path,
+                event_data: body.event_data ?? null
+            })
+            return
+        }
+
+        const geo = geoip.lookup(ip)
+        const country = geo?.country ?? null
+
+        const parser = new UAParser(body.user_agent)
+        const browser = parser.getBrowser().name ?? null
+        const os = parser.getOS().name ?? null
+        const device = parser.getDevice().type ?? 'desktop'
+
+        const session = await db.insert(sessions).values({
+            id: body.session_id,
+            website_id: body.website_id,
+            referrer: body.referrer ?? null,
+            language: body.language ?? null,
+            screen: body.screen ?? null,
+            country,
+            browser,
+            os,
+            device,
+        }).onConflictDoNothing().returning()
+
+        const sessionId = session[0]?.id ?? body.session_id
+        sessionCache.add(sessionId)
+
         addToBuffer({
             website_id: body.website_id,
-            session_id: body.session_id,
+            session_id: sessionId,
             eventname: body.event_name,
             url_path: body.url_path,
             event_data: body.event_data ?? null
         })
-        return
+    } catch (err) {
+        console.error('processEvent HATA:', err)
     }
-
-    const geo = geoip.lookup(ip)
-    const country = geo?.country ?? null
-
-    const parser = new UAParser(body.user_agent)
-    const browser = parser.getBrowser().name ?? null
-    const os = parser.getOS().name ?? null
-    const device = parser.getDevice().type ?? 'desktop'
-
-    const session = await db.insert(sessions).values({
-        id: body.session_id,
-        website_id: body.website_id,
-        referrer: body.referrer ?? null,
-        language: body.language ?? null,
-        screen: body.screen ?? null,
-        country,
-        browser,
-        os,
-        device,
-    }).returning()
-
-    sessionCache.add(session[0].id)
-
-    addToBuffer({
-        website_id: body.website_id,
-        session_id: session[0].id,
-        eventname: body.event_name,
-        url_path: body.url_path,
-        event_data: body.event_data ?? null
-    })
 }
 
 export const toplaRoutes = async (app: FastifyInstance) => {
@@ -78,12 +83,11 @@ export const toplaRoutes = async (app: FastifyInstance) => {
     app.post('/api/topla/batch', async (request, reply) => {
         const body = batchSchema.parse(request.body)
 
-        let processed = 0
-        for (const event of body.events) {
-            await processEvent(event, request.ip)
-            processed++
-        }
+        const results = await Promise.allSettled(
+            body.events.map(event => processEvent(event, request.ip))
+        )
 
+        const processed = results.filter(r => r.status === 'fulfilled').length
         return reply.code(200).send({ status: 'ok', processed })
     })
 
