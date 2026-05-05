@@ -12,48 +12,51 @@ import { heatmapRoutes } from './routes/heatmap'
 import { errorHandler } from './middlewares/errorHandler'
 import { websiteCache, sessionCache } from './db/cache'
 import { websites, sessions } from './db/schema'
-import { startBuffer, flush } from './db/writeBuffer'
 import { config } from './config'
+import { startWorker } from './services/worker'; // Yeni Worker servisi
 
 const app = Fastify()
 
 const start = async () => {
     try {
+        // 1. Middlewares & Static Files
         await app.register(corsMiddleware)
         await app.register(errorHandler)
         await app.register(fastifyStatic, {
             root: path.join(process.cwd(), 'public'),
         })
 
+        // Yüksek trafik için rate limit (Redis bağlı olmalı)
         await app.register(rateLimitMiddleware)
 
+        // 2. Health Checks
         app.get('/health', async () => {
             return { status: 'ok' }
         })
 
         app.get('/db-test', async () => {
-            const result = await db.execute(sql`SELECT 1`)
+            await db.execute(sql`SELECT 1`)
             return { status: 'db ok' }
         })
 
+        // 3. Routes
         await app.register(websiteRoutes)
         await app.register(toplaRoutes)
         await app.register(statsRoutes)
         await app.register(heatmapRoutes)
 
+        // 4. Cache Warmup (Başlangıçta verileri Redis'e yükle)
         const allWebsites = await db.select({ id: websites.id }).from(websites)
-        allWebsites.forEach(w => websiteCache.add(w.id))
-        console.log(`Cache yüklendi: ${websiteCache.size} site`)
+        await Promise.all(allWebsites.map(w => websiteCache.add(w.id)))
+        console.log(`✅ Website Cache yüklendi: ${allWebsites.length} site`)
 
         const allSessions = await db.select({ id: sessions.id }).from(sessions)
-        allSessions.forEach(s => sessionCache.add(s.id))
-        console.log(`Cache yüklendi: ${sessionCache.size} session`)
+        await Promise.all(allSessions.map(s => sessionCache.add(s.id)))
+        console.log(`✅ Session Cache yüklendi: ${allSessions.length} session`)
 
-        startBuffer()
-
+        // 5. Shutdown Handling (Kapatılırken temizlik yap)
         const shutdown = async (signal: string) => {
-            console.log(`${signal} alindi, buffer flush ediliyor...`)
-            await flush()
+            console.log(`⚠️ ${signal} alındı, servis kapatılıyor...`)
             await app.close()
             process.exit(0)
         }
@@ -61,10 +64,16 @@ const start = async () => {
         process.on('SIGTERM', () => shutdown('SIGTERM'))
         process.on('SIGINT', () => shutdown('SIGINT'))
 
+        // 6. Start Server
         await app.listen({ port: config.PORT, host: '0.0.0.0' })
-        console.log(`Server ${config.PORT} portunda calisiyor`)
+        console.log(`🚀 Server ${config.PORT} portunda çalışıyor`)
+
+        // 7. Start Background Worker
+        // API artık istek almaya hazır, arka planda Redis kuyruğunu işlemeye başlayabiliriz.
+        startWorker();
+
     } catch (err) {
-        console.error(err)
+        console.error('❌ Server başlatılamadı:', err)
         process.exit(1)
     }
 }

@@ -5,7 +5,9 @@ dotenv.config()
 const envSchema = z.object({
     DATABASE_URL: z.string().url(),
     PORT: z.coerce.number().default(5000),
-    API_URL: z.string().url()
+    API_URL: z.string().url(),
+    REDIS_URL: z.string()
+
 })
 
 const parsed = envSchema.safeParse(process.env)

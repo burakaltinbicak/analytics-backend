@@ -71,9 +71,8 @@ var events = (0, import_pg_core.pgTable)("events", {
 var import_drizzle_orm = require("drizzle-orm");
 var import_zod2 = require("zod");
 
-// src/db/cache.ts
-var websiteCache = /* @__PURE__ */ new Set();
-var sessionCache = /* @__PURE__ */ new Set();
+// src/db/redis.ts
+var import_ioredis = __toESM(require("ioredis"));
 
 // src/config.ts
 var import_zod = require("zod");
@@ -82,7 +81,8 @@ import_dotenv2.default.config();
 var envSchema = import_zod.z.object({
   DATABASE_URL: import_zod.z.string().url(),
   PORT: import_zod.z.coerce.number().default(5e3),
-  API_URL: import_zod.z.string().url()
+  API_URL: import_zod.z.string().url(),
+  REDIS_URL: import_zod.z.string()
 });
 var parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
@@ -90,6 +90,43 @@ if (!parsed.success) {
   process.exit(1);
 }
 var config = parsed.data;
+
+// src/db/redis.ts
+var redis = new import_ioredis.default(config.REDIS_URL);
+redis.on("connect", () => console.log("\u2705 Redis ba\u011Flantisi basarili"));
+redis.on("error", (err) => console.error("Redis ba\u011Flanti hatasi:", err));
+
+// src/db/cache.ts
+var WEBSITE_CACHE_KEY = "website_ids";
+var SESSION_TTL = 60 * 60 * 24;
+var websiteCache = {
+  has: async (id) => {
+    const result = await redis.sismember(WEBSITE_CACHE_KEY, id);
+    return result === 1;
+  },
+  add: async (id) => {
+    await redis.sadd(WEBSITE_CACHE_KEY, id);
+  }
+};
+var sessionCache = {
+  has: async (id) => {
+    const result = await redis.exists(`session:${id}`);
+    return result === 1;
+  },
+  add: async (id) => {
+    await redis.set(`session:${id}`, "1", "EX", SESSION_TTL);
+  }
+};
+async function checkCaches(websiteId, sessionId) {
+  const pipeline = redis.pipeline();
+  pipeline.sismember(WEBSITE_CACHE_KEY, websiteId);
+  pipeline.exists(`session:${sessionId}`);
+  const results = await pipeline.exec();
+  return {
+    websiteExists: results?.[0]?.[1] === 1,
+    sessionExists: results?.[1]?.[1] === 1
+  };
+}
 
 // src/routes/websites.ts
 var createWebsiteSchema = import_zod2.z.object({
@@ -136,49 +173,6 @@ var websiteRoutes = async (app2) => {
 
 // src/routes/topla.ts
 var import_zod3 = require("zod");
-var import_geoip_lite = __toESM(require("geoip-lite"));
-var import_ua_parser_js = require("ua-parser-js");
-
-// src/db/writeBuffer.ts
-var buffer = [];
-var FLUSH_INTERVAL = 2e3;
-var FLUSH_SIZE = 500;
-var MAX_RETRIES = 3;
-var isFlushing = false;
-var addToBuffer = (event) => {
-  buffer.push(event);
-  if (buffer.length >= FLUSH_SIZE) flush();
-};
-var flush = async () => {
-  if (buffer.length === 0) return;
-  if (isFlushing) return;
-  isFlushing = true;
-  const toWrite = buffer.splice(0, buffer.length);
-  try {
-    await db.insert(events).values(toWrite);
-  } catch (err) {
-    console.error("Flush hatasi:", err);
-    const retryable = toWrite.map((event) => ({
-      ...event,
-      _retries: (event._retries ?? 0) + 1
-    })).filter((event) => event._retries < MAX_RETRIES);
-    if (retryable.length > 0) {
-      buffer.unshift(...retryable);
-    }
-    const dropped = toWrite.length - retryable.length;
-    if (dropped > 0) {
-      console.warn(`[Buffer] ${dropped} event max retry a\u015F\u0131ld\u0131, silindi.`);
-    }
-  } finally {
-    isFlushing = false;
-  }
-};
-var startBuffer = () => {
-  setInterval(flush, FLUSH_INTERVAL);
-  console.log("Write buffer ba\u015Flatildi");
-};
-
-// src/routes/topla.ts
 var toplaSchema = import_zod3.z.object({
   website_id: import_zod3.z.string().uuid(),
   session_id: import_zod3.z.string(),
@@ -195,43 +189,13 @@ var batchSchema = import_zod3.z.object({
 });
 async function processEvent(body, ip) {
   try {
-    if (!websiteCache.has(body.website_id)) return;
-    if (sessionCache.has(body.session_id)) {
-      addToBuffer({
-        website_id: body.website_id,
-        session_id: body.session_id,
-        eventname: body.event_name,
-        url_path: body.url_path,
-        event_data: body.event_data ?? null
-      });
-      return;
-    }
-    const geo = import_geoip_lite.default.lookup(ip);
-    const country = geo?.country ?? null;
-    const parser = new import_ua_parser_js.UAParser(body.user_agent);
-    const browser = parser.getBrowser().name ?? null;
-    const os = parser.getOS().name ?? null;
-    const device = parser.getDevice().type ?? "desktop";
-    const session = await db.insert(sessions).values({
-      id: body.session_id,
-      website_id: body.website_id,
-      referrer: body.referrer ?? null,
-      language: body.language ?? null,
-      screen: body.screen ?? null,
-      country,
-      browser,
-      os,
-      device
-    }).onConflictDoNothing().returning();
-    const sessionId = session[0]?.id ?? body.session_id;
-    sessionCache.add(sessionId);
-    addToBuffer({
-      website_id: body.website_id,
-      session_id: sessionId,
-      eventname: body.event_name,
-      url_path: body.url_path,
-      event_data: body.event_data ?? null
-    });
+    const { websiteExists } = await checkCaches(body.website_id, body.session_id);
+    if (!websiteExists) return;
+    redis.lpush("tracking_queue", JSON.stringify({
+      ...body,
+      ip,
+      received_at: Date.now()
+    })).catch((err) => console.error("Redis Kuyruk Hatas\u0131:", err));
   } catch (err) {
     console.error("processEvent HATA:", err);
   }
@@ -239,21 +203,18 @@ async function processEvent(body, ip) {
 var toplaRoutes = async (app2) => {
   app2.post("/api/topla", async (request, reply) => {
     const body = toplaSchema.parse(request.body);
-    await processEvent(body, request.ip);
+    processEvent(body, request.ip);
     return reply.code(200).send({ status: "ok" });
   });
   app2.post("/api/topla/batch", async (request, reply) => {
     const body = batchSchema.parse(request.body);
-    const results = await Promise.allSettled(
-      body.events.map((event) => processEvent(event, request.ip))
-    );
-    const processed = results.filter((r) => r.status === "fulfilled").length;
-    return reply.code(200).send({ status: "ok", processed });
+    body.events.forEach((event) => {
+      processEvent(event, request.ip);
+    });
+    return reply.code(200).send({ status: "ok" });
   });
   app2.get("/api/topla", async (request, reply) => {
-    const sessionsResult = await db.select().from(sessions);
-    const eventsResult = await db.select().from(events);
-    return { sessions: sessionsResult, events: eventsResult };
+    return { message: "Bu endpoint sadece dashboard eri\u015Fimi i\xE7indir." };
   });
 };
 
@@ -381,6 +342,60 @@ var errorHandler = (0, import_fastify_plugin3.default)(async (fastify) => {
   });
 });
 
+// src/services/worker.ts
+var import_geoip_lite = __toESM(require("geoip-lite"));
+var import_ua_parser_js = require("ua-parser-js");
+var BATCH_SIZE = 1e3;
+var PROCESS_INTERVAL = 2e3;
+async function processQueue() {
+  try {
+    const rawDatas = await redis.rpop("tracking_queue", BATCH_SIZE);
+    if (!rawDatas || rawDatas.length === 0) return;
+    console.log(`[Worker] ${rawDatas.length} adet veri i\u015Fleniyor...`);
+    const parsedEvents = [];
+    const newSessions = /* @__PURE__ */ new Map();
+    for (const raw of rawDatas) {
+      const data = JSON.parse(raw);
+      const geo = import_geoip_lite.default.lookup(data.ip);
+      const parser = new import_ua_parser_js.UAParser(data.user_agent);
+      if (!newSessions.has(data.session_id)) {
+        newSessions.set(data.session_id, {
+          id: data.session_id,
+          website_id: data.website_id,
+          country: geo?.country ?? null,
+          browser: parser.getBrowser().name ?? null,
+          os: parser.getOS().name ?? null,
+          device: parser.getDevice().type ?? "desktop",
+          referrer: data.referrer ?? null,
+          language: data.language ?? null,
+          screen: data.screen ?? null
+        });
+      }
+      parsedEvents.push({
+        website_id: data.website_id,
+        session_id: data.session_id,
+        eventname: data.event_name,
+        url_path: data.url_path,
+        event_data: data.event_data ?? null,
+        created_at: new Date(data.received_at)
+      });
+    }
+    if (newSessions.size > 0) {
+      await db.insert(sessions).values(Array.from(newSessions.values())).onConflictDoNothing();
+    }
+    if (parsedEvents.length > 0) {
+      await db.insert(events).values(parsedEvents);
+    }
+    console.log(`[Worker] ${parsedEvents.length} kay\u0131t ba\u015Far\u0131yla Neon'a aktar\u0131ld\u0131.`);
+  } catch (err) {
+    console.error("[Worker Hata]:", err);
+  }
+}
+function startWorker() {
+  console.log("\u{1F680} Arka plan i\u015F\xE7isi ba\u015Flat\u0131ld\u0131...");
+  setInterval(processQueue, PROCESS_INTERVAL);
+}
+
 // src/index.ts
 var app = (0, import_fastify.default)();
 var start = async () => {
@@ -395,7 +410,7 @@ var start = async () => {
       return { status: "ok" };
     });
     app.get("/db-test", async () => {
-      const result = await db.execute(import_drizzle_orm4.sql`SELECT 1`);
+      await db.execute(import_drizzle_orm4.sql`SELECT 1`);
       return { status: "db ok" };
     });
     await app.register(websiteRoutes);
@@ -403,24 +418,23 @@ var start = async () => {
     await app.register(statsRoutes);
     await app.register(heatmapRoutes);
     const allWebsites = await db.select({ id: websites.id }).from(websites);
-    allWebsites.forEach((w) => websiteCache.add(w.id));
-    console.log(`Cache y\xFCklendi: ${websiteCache.size} site`);
+    await Promise.all(allWebsites.map((w) => websiteCache.add(w.id)));
+    console.log(`\u2705 Website Cache y\xFCklendi: ${allWebsites.length} site`);
     const allSessions = await db.select({ id: sessions.id }).from(sessions);
-    allSessions.forEach((s) => sessionCache.add(s.id));
-    console.log(`Cache y\xFCklendi: ${sessionCache.size} session`);
-    startBuffer();
+    await Promise.all(allSessions.map((s) => sessionCache.add(s.id)));
+    console.log(`\u2705 Session Cache y\xFCklendi: ${allSessions.length} session`);
     const shutdown = async (signal) => {
-      console.log(`${signal} alindi, buffer flush ediliyor...`);
-      await flush();
+      console.log(`\u26A0\uFE0F ${signal} al\u0131nd\u0131, servis kapat\u0131l\u0131yor...`);
       await app.close();
       process.exit(0);
     };
     process.on("SIGTERM", () => shutdown("SIGTERM"));
     process.on("SIGINT", () => shutdown("SIGINT"));
     await app.listen({ port: config.PORT, host: "0.0.0.0" });
-    console.log(`Server ${config.PORT} portunda calisiyor`);
+    console.log(`\u{1F680} Server ${config.PORT} portunda \xE7al\u0131\u015F\u0131yor`);
+    startWorker();
   } catch (err) {
-    console.error(err);
+    console.error("\u274C Server ba\u015Flat\u0131lamad\u0131:", err);
     process.exit(1);
   }
 };

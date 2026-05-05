@@ -10,8 +10,8 @@ type BufferedEvent = {
 }
 
 const buffer: BufferedEvent[] = []
-const FLUSH_INTERVAL = 2000
-const FLUSH_SIZE = 500
+const FLUSH_INTERVAL = 5000
+const FLUSH_SIZE = 1000
 const MAX_RETRIES = 3
 let isFlushing = false
 

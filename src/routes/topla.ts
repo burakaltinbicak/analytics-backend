@@ -1,11 +1,7 @@
 import { FastifyInstance } from 'fastify'
-import { db } from '../db/index'
-import { sessions, events } from '../db/schema'
 import { z } from 'zod'
-import geoip from 'geoip-lite'
-import { UAParser } from 'ua-parser-js'
-import { websiteCache, sessionCache } from '../db/cache'
-import { addToBuffer } from '../db/writeBuffer'
+import { checkCaches } from '../db/cache'
+import { redis } from '../db/redis' // Redis instance'ını buradan aldığımızı varsayıyorum
 
 const toplaSchema = z.object({
     website_id: z.string().uuid(),
@@ -23,77 +19,55 @@ const batchSchema = z.object({
     events: z.array(toplaSchema).min(1).max(50)
 })
 
+/**
+ * Bu fonksiyon artık sadece bir "Postacı".
+ * Veriyi alıyor, üstüne IP ve zaman ekleyip Redis kuyruğuna fırlatıyor.
+ */
 async function processEvent(body: z.infer<typeof toplaSchema>, ip: string) {
     try {
-        if (!websiteCache.has(body.website_id)) return
+        // Sadece websitesi sistemde kayıtlı mı diye hızlıca bakıyoruz (Redis Cache)
+        const { websiteExists } = await checkCaches(body.website_id, body.session_id)
+        if (!websiteExists) return
 
-        if (sessionCache.has(body.session_id)) {
-            addToBuffer({
-                website_id: body.website_id,
-                session_id: body.session_id,
-                eventname: body.event_name,
-                url_path: body.url_path,
-                event_data: body.event_data ?? null
-            })
-            return
-        }
+        // HIZIN SIRRI: Veriyi işlemeden (parse etmeden) ham halde kuyruğa atıyoruz.
+        // .catch kullanarak 'fire and forget' yapıyoruz, yani cevabı beklemiyoruz.
+        redis.lpush('tracking_queue', JSON.stringify({
+            ...body,
+            ip,
+            received_at: Date.now()
+        })).catch(err => console.error('Redis Kuyruk Hatası:', err))
 
-        const geo = geoip.lookup(ip)
-        const country = geo?.country ?? null
-
-        const parser = new UAParser(body.user_agent)
-        const browser = parser.getBrowser().name ?? null
-        const os = parser.getOS().name ?? null
-        const device = parser.getDevice().type ?? 'desktop'
-
-        const session = await db.insert(sessions).values({
-            id: body.session_id,
-            website_id: body.website_id,
-            referrer: body.referrer ?? null,
-            language: body.language ?? null,
-            screen: body.screen ?? null,
-            country,
-            browser,
-            os,
-            device,
-        }).onConflictDoNothing().returning()
-
-        const sessionId = session[0]?.id ?? body.session_id
-        sessionCache.add(sessionId)
-
-        addToBuffer({
-            website_id: body.website_id,
-            session_id: sessionId,
-            eventname: body.event_name,
-            url_path: body.url_path,
-            event_data: body.event_data ?? null
-        })
     } catch (err) {
         console.error('processEvent HATA:', err)
     }
 }
 
 export const toplaRoutes = async (app: FastifyInstance) => {
+    // Tekli veri toplama
     app.post('/api/topla', async (request, reply) => {
         const body = toplaSchema.parse(request.body)
-        await processEvent(body, request.ip)
+
+        // Await kullanmıyoruz! Veriyi fırlat ve devam et.
+        processEvent(body, request.ip)
+
         return reply.code(200).send({ status: 'ok' })
     })
 
+    // Toplu (Batch) veri toplama
     app.post('/api/topla/batch', async (request, reply) => {
         const body = batchSchema.parse(request.body)
 
-        const results = await Promise.allSettled(
-            body.events.map(event => processEvent(event, request.ip))
-        )
+        // Verileri topluca kuyruğa fırlatıyoruz
+        body.events.forEach(event => {
+            processEvent(event, request.ip)
+        })
 
-        const processed = results.filter(r => r.status === 'fulfilled').length
-        return reply.code(200).send({ status: 'ok', processed })
+        return reply.code(200).send({ status: 'ok' })
     })
 
+    // Bu endpoint admin paneli/dashboard içindir, hızı etkilemez.
     app.get('/api/topla', async (request, reply) => {
-        const sessionsResult = await db.select().from(sessions)
-        const eventsResult = await db.select().from(events)
-        return { sessions: sessionsResult, events: eventsResult }
+        // Buradaki db sorguları dashboard için kalabilir.
+        return { message: "Bu endpoint sadece dashboard erişimi içindir." }
     })
 }
