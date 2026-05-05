@@ -3,14 +3,14 @@ import { db } from '../db/index';
 import { sessions, events } from '../db/schema';
 import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
-import { sessionCache } from '../db/cache';
 
-const BATCH_SIZE = 1000; // Her seferinde kaç kayıt işlenecek?
-const PROCESS_INTERVAL = 2000; // Kaç milisaniyede bir çalışacak?
+const BATCH_SIZE = 1000;
+const PROCESS_INTERVAL = 2000;
+
+const parser = new UAParser()
 
 async function processQueue() {
     try {
-        // 1. Redis'ten toplu veri çek (RPOP ile son eklenenlerden başla)
         const rawDatas = await redis.rpop('tracking_queue', BATCH_SIZE);
         if (!rawDatas || rawDatas.length === 0) return;
 
@@ -22,11 +22,9 @@ async function processQueue() {
         for (const raw of rawDatas) {
             const data = JSON.parse(raw);
 
-            // 2. Ağır işlemler burada, API dışında yapılıyor
             const geo = geoip.lookup(data.ip);
-            const parser = new UAParser(data.user_agent);
+            parser.setUA(data.user_agent)
 
-            // Session kontrolü ve hazırlığı
             if (!newSessions.has(data.session_id)) {
                 newSessions.set(data.session_id, {
                     id: data.session_id,
@@ -41,7 +39,6 @@ async function processQueue() {
                 });
             }
 
-            // Event hazırlığı
             parsedEvents.push({
                 website_id: data.website_id,
                 session_id: data.session_id,
@@ -52,15 +49,12 @@ async function processQueue() {
             });
         }
 
-        // 3. Veritabanına (Neon) TOPLU YAZMA (Batch Insert)
-        // Sessions (Çakışmaları önleyerek yaz)
         if (newSessions.size > 0) {
             await db.insert(sessions)
                 .values(Array.from(newSessions.values()))
                 .onConflictDoNothing();
         }
 
-        // Events
         if (parsedEvents.length > 0) {
             await db.insert(events).values(parsedEvents);
         }
@@ -72,7 +66,6 @@ async function processQueue() {
     }
 }
 
-// Worker'ı başlatan ana fonksiyon
 export function startWorker() {
     console.log('🚀 Arka plan işçisi başlatıldı...');
     setInterval(processQueue, PROCESS_INTERVAL);
